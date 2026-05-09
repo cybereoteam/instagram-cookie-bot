@@ -1,24 +1,29 @@
 # instagram.py
 import json
-import time
-import random
-from playwright.sync_api import sync_playwright
+from instagrapi import Client
+from instagrapi.exceptions import LoginRequired, ChallengeRequired, TwoFactorRequired
 
 class InstagramCookieExtractor:
-    """Playwright দিয়ে Instagram কুকি এক্সট্রাক্টর"""
+    """Instagrapi দিয়ে Instagram কুকি এক্সট্রাক্টর"""
     
     def __init__(self):
-        self.browser = None
-        self.context = None
-        self.page = None
+        self.client = Client()
     
     def log(self, msg):
         print(f"[INSTA] {msg}", flush=True)
     
-    def _random_delay(self, min_sec=1, max_sec=3):
-        time.sleep(random.uniform(min_sec, max_sec))
-    
     def extract_cookies(self, username, password, two_factor_key=None):
+        """
+        Instagram থেকে কুকি এক্সট্রাক্ট
+        
+        Args:
+            username: ইউজারনেম
+            password: পাসওয়ার্ড
+            two_factor_key: ৬-ডিজিট ম্যানুয়াল কোড
+            
+        Returns:
+            dict: রেজাল্ট
+        """
         result = {
             "success": False,
             "username": username,
@@ -30,107 +35,83 @@ class InstagramCookieExtractor:
         self.log(f"{'='*10} {username} - শুরু {'='*10}")
         
         try:
-            # Playwright স্টার্ট
-            self.log("ব্রাউজার চালু হচ্ছে...")
-            playwright = sync_playwright().start()
-            self.browser = playwright.chromium.launch(
-                headless=True,
-                args=['--no-sandbox', '--disable-dev-shm-usage']
-            )
+            # 2FA হ্যান্ডলার
+            verification_code = None
             
-            # মোবাইল ইউজার এজেন্ট
-            self.context = self.browser.new_context(
-                user_agent="Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-                viewport={"width": 390, "height": 844}
-            )
-            self.page = self.context.new_page()
-            
-            # Instagram লগইন পেজ
-            self.log("Instagram খোলা হচ্ছে...")
-            self.page.goto("https://www.instagram.com/accounts/login/")
-            self._random_delay(3, 5)
-            
-            # ইউজারনেম
-            self.log("ইউজারনেম দেওয়া হচ্ছে...")
-            self.page.fill("input[name='username']", username)
-            self._random_delay(1, 2)
-            
-            # পাসওয়ার্ড
-            self.log("পাসওয়ার্ড দেওয়া হচ্ছে...")
-            self.page.fill("input[name='password']", password)
-            self._random_delay(1, 2)
+            if two_factor_key:
+                if two_factor_key.strip().isdigit() and len(two_factor_key.strip()) == 6:
+                    verification_code = two_factor_key.strip()
+                    self.log(f"ম্যানুয়াল 2FA কোড: {verification_code}")
+                else:
+                    try:
+                        import pyotp
+                        clean_key = two_factor_key.replace(" ", "").upper()
+                        totp = pyotp.TOTP(clean_key)
+                        verification_code = totp.now()
+                        self.log(f"TOTP কোড: {verification_code}")
+                    except:
+                        pass
             
             # লগইন
-            self.log("লগইন বাটনে ক্লিক...")
-            self.page.click("button[type='submit']")
-            self._random_delay(5, 8)
+            self.log(f"লগইন চেষ্টা: {username}")
             
-            # 2FA চেক
-            if "challenge" in self.page.url or "two_factor" in self.page.url:
-                self.log("2FA প্রয়োজন")
-                
-                if two_factor_key:
-                    verification_code = None
-                    
-                    if two_factor_key.strip().isdigit() and len(two_factor_key.strip()) == 6:
-                        verification_code = two_factor_key.strip()
-                        self.log(f"ম্যানুয়াল কোড: {verification_code}")
-                    else:
-                        try:
-                            import pyotp
-                            clean_key = two_factor_key.replace(" ", "").upper()
-                            totp = pyotp.TOTP(clean_key)
-                            verification_code = totp.now()
-                            self.log(f"TOTP কোড: {verification_code}")
-                        except:
-                            result["error"] = "2FA কোড জেনারেট ব্যর্থ"
-                            return result
-                    
-                    # কোড ইনপুট
-                    self.page.fill("input[name='verificationCode']", verification_code)
-                    self._random_delay(1, 2)
-                    self.page.click("button:has-text('Submit'), button:has-text('Confirm')")
-                    self._random_delay(5, 8)
-                else:
-                    result["error"] = "2FA প্রয়োজন"
-                    return result
+            if verification_code:
+                self.client.login(username, password, verification_code=verification_code)
+            else:
+                self.client.login(username, password)
             
-            # লগইন চেক
-            if "login" in self.page.url:
-                result["error"] = "লগইন ব্যর্থ"
-                return result
+            self.log("✅ লগইন সফল!")
             
-            self.log("লগইন সফল!")
-            self._random_delay(2, 3)
-            
-            # কুকি
+            # কুকি বের করা
             self.log("কুকি সংগ্রহ...")
-            cookies = self.context.cookies()
+            settings = self.client.get_settings()
             
             cookies_dict = {}
             important_cookies = {}
             
-            for cookie in cookies:
-                cookies_dict[cookie['name']] = cookie['value']
-                if cookie['name'] in ['sessionid', 'csrftoken', 'ds_user_id', 'mid', 'ig_did']:
-                    important_cookies[cookie['name']] = cookie['value']
-                    self.log(f"  {cookie['name']}: {cookie['value'][:25]}...")
+            # Authorization header থেকে token
+            auth_token = settings.get('authorization_data', {}).get('sessionid', '')
             
-            if 'sessionid' not in important_cookies:
-                result["error"] = "sessionid পাওয়া যায়নি"
-                return result
+            # Cookies
+            cookies_raw = self.client.private.cookies
+            for key, value in cookies_raw.items():
+                cookies_dict[key] = value
+            
+            # গুরুত্বপূর্ণ কুকি
+            for key in ['sessionid', 'csrftoken', 'ds_user_id', 'mid', 'ig_did']:
+                if key in cookies_dict:
+                    important_cookies[key] = cookies_dict[key]
+                    self.log(f"  ✅ {key}: {cookies_dict[key][:25]}...")
+            
+            # ds_user_id
+            try:
+                user_id = self.client.user_id
+                important_cookies['ds_user_id'] = str(user_id)
+                cookies_dict['ds_user_id'] = str(user_id)
+                self.log(f"  ✅ ds_user_id: {user_id}")
+            except:
+                pass
             
             result["success"] = True
             result["cookies"] = cookies_dict
             result["important_cookies"] = important_cookies
-            self.log(f"সফল! কুকি: {list(important_cookies.keys())}")
+            
+            self.log(f"🎉 সফল!")
+            
+        except TwoFactorRequired:
+            result["error"] = "2FA কোড প্রয়োজন। দয়া করে ৬-ডিজিট 2FA কোড দিন।"
+            self.log("2FA প্রয়োজন")
+            
+        except ChallengeRequired:
+            result["error"] = "Instagram চ্যালেঞ্জ চাইছে। মোবাইল অ্যাপ থেকে ভেরিফাই করুন।"
+            self.log("চ্যালেঞ্জ প্রয়োজন")
+            
+        except LoginRequired:
+            result["error"] = "লগইন ব্যর্থ। ইউজারনেম বা পাসওয়ার্ড ভুল।"
+            self.log("লগইন ব্যর্থ")
             
         except Exception as e:
             result["error"] = f"এরর: {str(e)[:100]}"
             self.log(f"এক্সেপশন: {e}")
-        
-        finally:
-            if self.browser:
-                self.browser.close()
         
         return result
