@@ -1,202 +1,55 @@
 # instagram.py
-import requests
 import json
 import time
-import re
-import hashlib
-import uuid
-import config
+import random
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 
 class InstagramCookieExtractor:
-    """Instagram কুকি এক্সট্রাক্টর — ফাইনাল ফিক্সড ভার্সন"""
+    """Selenium দিয়ে Instagram কুকি এক্সট্রাক্টর"""
     
     def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update(config.INSTAGRAM_HEADERS)
-        self.current_username = None
-        self.device_id = None
+        self.driver = None
     
     def log(self, msg):
-        """লগ প্রিন্ট"""
         print(f"[INSTA] {msg}", flush=True)
     
-    def _generate_device_id(self, username):
-        """ইউনিক ডিভাইস আইডি"""
-        seed = f"android-{username}-{int(time.time())}"
-        return "android-" + hashlib.md5(seed.encode()).hexdigest()[:16]
+    def _setup_driver(self):
+        """Chrome ড্রাইভার সেটআপ"""
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")  # ব্যাকগ্রাউন্ডে চলবে
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument("--user-agent=Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+        
+        service = Service('/data/data/com.termux/files/usr/bin/chromedriver')
+        self.driver = webdriver.Chrome(service=service, options=chrome_options)
+        self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     
-    def _get_csrf_token(self):
-        """CSRF টোকেন সংগ্রহ — মাল্টিপল ফলব্যাক"""
-        try:
-            self.log("Instagram হোমপেজ লোড হচ্ছে...")
-            
-            response = self.session.get(
-                "https://www.instagram.com/",
-                headers={
-                    "User-Agent": config.INSTAGRAM_HEADERS["User-Agent"],
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9",
-                },
-                timeout=15
-            )
-            self.log(f"হোমপেজ স্ট্যাটাস: {response.status_code}")
-            
-            csrf_token = None
-            
-            # পদ্ধতি ১: HTML থেকে
-            csrf_match = re.search(r'"csrf_token":"(.*?)"', response.text)
-            if csrf_match:
-                csrf_token = csrf_match.group(1)
-                self.log(f"CSRF (HTML): {csrf_token[:15]}...")
-            
-            # পদ্ধতি ২: কুকি থেকে
-            if not csrf_token:
-                for cookie in self.session.cookies:
-                    if cookie.name == 'csrftoken':
-                        csrf_token = cookie.value
-                        self.log("CSRF (Cookie) পাওয়া গেছে")
-                        break
-            
-            if not csrf_token:
-                self.log("CSRF টোকেন পাওয়া যায়নি!")
-                return None
-            
-            self.session.headers.update({"X-CSRFToken": csrf_token})
-            
-            # ডিভাইস আইডি
-            self.device_id = self._generate_device_id(self.current_username or "default")
-            
-            # সব প্রয়োজনীয় হেডার
-            self.session.headers.update({
-                "X-IG-App-ID": "936619743392459",
-                "X-IG-App-Locale": "en_US",
-                "X-IG-Device-Locale": "en_US",
-                "X-IG-Device-ID": self.device_id,
-                "X-IG-Connection-Type": "WIFI",
-                "X-IG-Capabilities": "3brTv10=",
-            })
-            
-            return csrf_token
-            
-        except Exception as e:
-            self.log(f"CSRF এরর: {e}")
-            return None
-    
-    def _encrypt_password(self, password):
-        """Instagram স্টাইল পাসওয়ার্ড এনক্রিপশন"""
-        return f"#PWD_INSTAGRAM_BROWSER:0:{int(time.time())}:{password}"
-    
-    def _handle_2fa(self, two_factor_key, two_factor_identifier):
-        """2FA ভেরিফিকেশন"""
-        try:
-            import pyotp
-            clean_key = two_factor_key.replace(" ", "").upper()
-            totp = pyotp.TOTP(clean_key)
-            verification_code = totp.now()
-            self.log(f"2FA কোড: {verification_code}")
-        except Exception as e:
-            self.log(f"pyotp এরর: {e}")
-            return False
-        
-        two_factor_data = {
-            "verification_code": verification_code,
-            "two_factor_identifier": two_factor_identifier,
-            "username": self.current_username,
-            "trust_this_device": "1",
-            "verification_method": "3",
-            "device_id": self.device_id,
-            "guid": str(uuid.uuid4()),
-        }
-        
-        response = self.session.post(
-            "https://www.instagram.com/api/v1/web/accounts/login/ajax/two_factor/",
-            data=two_factor_data,
-            headers={
-                "X-CSRFToken": self.session.headers.get("X-CSRFToken"),
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Referer": "https://www.instagram.com/accounts/login/",
-                "X-IG-App-ID": "936619743392459",
-                "X-Requested-With": "XMLHttpRequest",
-            },
-            timeout=15
-        )
-        
-        self.log(f"2FA স্ট্যাটাস: {response.status_code}")
-        self.log(f"2FA রেসপন্স: {response.text[:300]}")
-        
-        result = response.json()
-        
-        if result.get("authenticated"):
-            self.log("✅ 2FA সফল!")
-            return True
-        elif result.get("spam"):
-            self.log("❌ Instagram স্প্যাম ডিটেক্ট করেছে")
-            return False
-        else:
-            self.log(f"❌ 2FA ব্যর্থ: {result.get('message', '')}")
-            return False
-    
-    def _verify_login_success(self):
-        """লগইন সফল হয়েছে কিনা চেক করা"""
-        try:
-            # প্রথমে কুকি চেক
-            has_sessionid = False
-            has_ds_user_id = False
-            
-            for cookie in self.session.cookies:
-                if cookie.name == 'sessionid':
-                    has_sessionid = True
-                if cookie.name == 'ds_user_id':
-                    has_ds_user_id = True
-            
-            self.log(f"কুকি চেক: sessionid={has_sessionid}, ds_user_id={has_ds_user_id}")
-            
-            # sessionid থাকলে সফল
-            if has_sessionid:
-                return True
-            
-            # sessionid না থাকলে API দিয়ে চেক
-            if has_ds_user_id:
-                self.log("API দিয়ে লগইন ভেরিফাই করা হচ্ছে...")
-                time.sleep(1)
-                test_response = self.session.get(
-                    "https://www.instagram.com/api/v1/accounts/current_user/",
-                    headers={
-                        "X-CSRFToken": self.session.headers.get("X-CSRFToken", ""),
-                        "X-IG-App-ID": "936619743392459",
-                    },
-                    timeout=10
-                )
-                
-                if test_response.status_code == 200:
-                    user_data = test_response.json()
-                    if user_data.get("user", {}).get("pk"):
-                        self.log("API দিয়ে লগইন ভেরিফাইড!")
-                        return True
-            
-            return False
-            
-        except Exception as e:
-            self.log(f"ভেরিফিকেশন এরর: {e}")
-            return False
+    def _random_delay(self, min_sec=1, max_sec=3):
+        """র‍্যান্ডম ডিলে"""
+        time.sleep(random.uniform(min_sec, max_sec))
     
     def extract_cookies(self, username, password, two_factor_key=None):
         """
-        Instagram থেকে কুকি এক্সট্রাক্ট — মেইন ফাংশন
+        Instagram থেকে কুকি এক্সট্রাক্ট
         
         Args:
-            username: Instagram ইউজারনেম
+            username: ইউজারনেম
             password: পাসওয়ার্ড
-            two_factor_key: TOTP Secret (2FA এর জন্য, না থাকলে None)
+            two_factor_key: TOTP Secret বা ৬-ডিজিট কোড
             
         Returns:
-            dict: {
-                "success": True/False,
-                "username": "...",
-                "cookies": {...},
-                "important_cookies": {...},
-                "error": "..."
-            }
+            dict: রেজাল্ট
         """
         result = {
             "success": False,
@@ -206,164 +59,126 @@ class InstagramCookieExtractor:
             "error": None
         }
         
-        self.current_username = username
         self.log(f"{'='*10} {username} - শুরু {'='*10}")
         
         try:
-            # ========== ধাপ ১: CSRF টোকেন ==========
-            csrf_token = self._get_csrf_token()
-            if not csrf_token:
-                result["error"] = "❌ Instagram সার্ভারে কানেক্ট করতে পারেনি। IP ব্লক হতে পারে।"
-                return result
+            # ড্রাইভার সেটআপ
+            self._setup_driver()
             
-            time.sleep(2)
+            # Instagram খোলা
+            self.log("Instagram খোলা হচ্ছে...")
+            self.driver.get("https://www.instagram.com/accounts/login/")
+            self._random_delay(3, 5)
             
-            # ========== ধাপ ২: লগইন ==========
-            self.log(f"লগইন চেষ্টা: {username}")
-            
-            login_data = {
-                "username": username,
-                "enc_password": self._encrypt_password(password),
-                "queryParams": "{}",
-                "optIntoOneTap": "false",
-            }
-            
-            login_response = self.session.post(
-                config.INSTAGRAM_LOGIN_URL,
-                data=login_data,
-                headers={
-                    "X-CSRFToken": csrf_token,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Referer": "https://www.instagram.com/accounts/login/",
-                    "X-IG-App-ID": "936619743392459",
-                    "X-Requested-With": "XMLHttpRequest",
-                },
-                timeout=15
+            # ইউজারনেম
+            self.log("ইউজারনেম দেওয়া হচ্ছে...")
+            username_field = WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.NAME, "username"))
             )
+            username_field.clear()
+            for char in username:
+                username_field.send_keys(char)
+                time.sleep(random.uniform(0.05, 0.15))
+            self._random_delay(1, 2)
             
-            self.log(f"লগইন স্ট্যাটাস: {login_response.status_code}")
+            # পাসওয়ার্ড
+            self.log("পাসওয়ার্ড দেওয়া হচ্ছে...")
+            password_field = self.driver.find_element(By.NAME, "password")
+            password_field.clear()
+            for char in password:
+                password_field.send_keys(char)
+                time.sleep(random.uniform(0.05, 0.15))
+            self._random_delay(1, 2)
             
-            try:
-                login_result = login_response.json()
-            except:
-                result["error"] = f"Instagram অজানা রেসপন্স দিয়েছে (স্ট্যাটাস: {login_response.status_code})"
-                self.log(f"রেসপন্স: {login_response.text[:300]}")
-                return result
+            # লগইন বাটন
+            self.log("লগইন বাটনে ক্লিক...")
+            login_button = self.driver.find_element(By.XPATH, "//button[@type='submit']")
+            login_button.click()
+            self._random_delay(5, 8)
             
-            self.log(f"রেসপন্স: {json.dumps(login_result)[:400]}")
+            # 2FA চেক
+            current_url = self.driver.current_url
             
-            # ========== ধাপ ৩: লগইন রেজাল্ট চেক ==========
-            
-            # কেস ১: সরাসরি সফল
-            if login_result.get("authenticated"):
-                self.log("✅ সরাসরি লগইন সফল!")
-            
-            # কেস ২: user=true কিন্তু authenticated=false
-            elif login_result.get("user") and not login_result.get("authenticated"):
-                self.log("user=true কিন্তু authenticated=false — ভেরিফাই করা হচ্ছে...")
-                
-                # কিছুক্ষণ অপেক্ষা
-                time.sleep(3)
-                
-                # কুকি ইতিমধ্যে সেট হয়েছে কিনা চেক
-                if self._verify_login_success():
-                    self.log("✅ ভেরিফিকেশন সফল! কুকি পাওয়া গেছে।")
-                else:
-                    result["error"] = (
-                        "⚠️ Instagram লগইন সম্পূর্ণ করতে পারেনি।\n\n"
-                        "সম্ভাব্য কারণ:\n"
-                        "• Railway/সার্ভারের IP ব্লকড\n"
-                        "• Instagram সিকিউরিটি চেক চাইছে\n\n"
-                        "💡 সমাধান: আপনার লোকাল পিসি/ল্যাপটপ থেকে বট রান করুন।"
-                    )
-                    return result
-            
-            # কেস ৩: 2FA প্রয়োজন
-            elif login_result.get("two_factor_required"):
+            if "challenge" in current_url or "two_factor" in current_url:
                 self.log("2FA প্রয়োজন")
                 
-                if not two_factor_key:
-                    result["error"] = "2FA প্রয়োজন কিন্তু কী দেওয়া হয়নি। 'none' না লিখে TOTP Secret দিন।"
+                if two_factor_key:
+                    # 2FA কোড তৈরি
+                    verification_code = None
+                    
+                    if two_factor_key.strip().isdigit() and len(two_factor_key.strip()) == 6:
+                        verification_code = two_factor_key.strip()
+                        self.log(f"ম্যানুয়াল কোড: {verification_code}")
+                    else:
+                        try:
+                            import pyotp
+                            clean_key = two_factor_key.replace(" ", "").upper()
+                            totp = pyotp.TOTP(clean_key)
+                            verification_code = totp.now()
+                            self.log(f"TOTP কোড: {verification_code}")
+                        except:
+                            result["error"] = "2FA কোড জেনারেট করতে ব্যর্থ"
+                            return result
+                    
+                    # কোড ইনপুট
+                    code_field = WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.XPATH, "//input[@name='verificationCode' or @aria-label='Security code']"))
+                    )
+                    code_field.clear()
+                    code_field.send_keys(verification_code)
+                    self._random_delay(1, 2)
+                    
+                    # সাবমিট
+                    submit_btn = self.driver.find_element(By.XPATH, "//button[contains(text(), 'Submit') or contains(text(), 'Confirm')]")
+                    submit_btn.click()
+                    self._random_delay(5, 8)
+                    
+                    # চেক
+                    if "challenge" in self.driver.current_url or "two_factor" in self.driver.current_url:
+                        result["error"] = "2FA ভেরিফিকেশন ব্যর্থ"
+                        return result
+                else:
+                    result["error"] = "2FA প্রয়োজন কিন্তু কী দেওয়া হয়নি"
                     return result
-                
-                two_factor_id = login_result.get("two_factor_info", {}).get("two_factor_identifier")
-                if not two_factor_id:
-                    result["error"] = "2FA আইডেন্টিফায়ার পাওয়া যায়নি"
-                    return result
-                
-                if not self._handle_2fa(two_factor_key, two_factor_id):
-                    result["error"] = "2FA ভেরিফিকেশন ব্যর্থ। TOTP Secret সঠিক কিনা চেক করুন।"
-                    return result
             
-            # কেস ৪: চেকপয়েন্ট / চ্যালেঞ্জ
-            elif login_result.get("checkpoint_required"):
-                result["error"] = "⛔ Instagram চেকপয়েন্ট চাইছে। মোবাইল অ্যাপ থেকে লগইন করে ভেরিফাই করুন।"
-                return result
-            elif login_result.get("message") == "challenge_required":
-                result["error"] = "⛔ Instagram চ্যালেঞ্জ চাইছে। ব্রাউজার থেকে লগইন করে ভেরিফাই করুন।"
+            # লগইন চেক
+            if "login" in self.driver.current_url:
+                result["error"] = "লগইন ব্যর্থ"
                 return result
             
-            # কেস ৫: ভুল পাসওয়ার্ড
-            elif login_result.get("error_type") == "bad_password":
-                result["error"] = "❌ ভুল পাসওয়ার্ড। আবার চেষ্টা করুন।"
-                return result
+            self.log("লগইন সফল!")
+            self._random_delay(2, 3)
             
-            # কেস ৬: অন্যান্য এরর
-            else:
-                error_msg = login_result.get("message", "অজানা")
-                result["error"] = f"❌ Instagram লগইন ব্যর্থ: {error_msg}"
-                return result
-            
-            # ========== ধাপ ৪: কুকি সংগ্রহ ==========
-            self.log("কুকি সংগ্রহ করা হচ্ছে...")
-            time.sleep(1)
+            # কুকি সংগ্রহ
+            self.log("কুকি সংগ্রহ...")
+            cookies = self.driver.get_cookies()
             
             cookies_dict = {}
             important_cookies = {}
             
-            for cookie in self.session.cookies:
-                cookies_dict[cookie.name] = cookie.value
-                if cookie.name in ['sessionid', 'csrftoken', 'ds_user_id', 'mid', 'ig_did', 'rur']:
-                    important_cookies[cookie.name] = cookie.value
-                    self.log(f"  ✅ {cookie.name}: {cookie.value[:25]}...")
+            for cookie in cookies:
+                cookies_dict[cookie['name']] = cookie['value']
+                if cookie['name'] in ['sessionid', 'csrftoken', 'ds_user_id', 'mid', 'ig_did', 'rur']:
+                    important_cookies[cookie['name']] = cookie['value']
+                    self.log(f"  {cookie['name']}: {cookie['value'][:25]}...")
             
-            # ds_user_id না থাকলে API থেকে নেওয়া
-            if 'ds_user_id' not in important_cookies:
-                try:
-                    user_response = self.session.get(
-                        "https://www.instagram.com/api/v1/accounts/current_user/",
-                        headers={"X-CSRFToken": self.session.headers.get("X-CSRFToken", "")},
-                        timeout=10
-                    )
-                    if user_response.status_code == 200:
-                        user_data = user_response.json()
-                        pk = str(user_data.get("user", {}).get("pk", ""))
-                        if pk:
-                            important_cookies['ds_user_id'] = pk
-                            cookies_dict['ds_user_id'] = pk
-                            self.log(f"  ✅ ds_user_id (API): {pk}")
-                except:
-                    pass
-            
-            # ফাইনাল চেক
             if 'sessionid' not in important_cookies:
-                result["error"] = "❌ sessionid কুকি পাওয়া যায়নি। এক্সট্রাকশন ব্যর্থ।"
+                result["error"] = "sessionid পাওয়া যায়নি"
                 return result
             
-            # ========== সফল! ==========
             result["success"] = True
             result["cookies"] = cookies_dict
             result["important_cookies"] = important_cookies
             
-            self.log(f"🎉 সফল! কুকি: {list(important_cookies.keys())}")
+            self.log(f"সফল! কুকি: {list(important_cookies.keys())}")
             self.log(f"{'='*10} {username} - সফল {'='*10}")
             
-        except requests.exceptions.ConnectionError:
-            result["error"] = "🔌 কানেকশন এরর। Instagram ব্লক করেছে বা নেটওয়ার্ক সমস্যা।"
-        except requests.exceptions.Timeout:
-            result["error"] = "⏰ টাইমআউট। Instagram সার্ভার রেসপন্স করছে না।"
         except Exception as e:
-            result["error"] = f"💥 এরর: {str(e)[:100]}"
+            result["error"] = f"এরর: {str(e)[:100]}"
             self.log(f"এক্সেপশন: {e}")
+        
+        finally:
+            if self.driver:
+                self.driver.quit()
         
         return result
