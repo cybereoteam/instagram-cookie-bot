@@ -1,12 +1,13 @@
 # config.py
 import os
 
-# Railway Environment Variable থেকে টোকেন নেওয়া
+# Railway Environment Variable থেকে টোকেন লোড
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN সেট করা নেই! Railway Variables-এ সেট করুন।")
+    raise ValueError("❌ BOT_TOKEN সেট করা নেই! Railway Variables-এ BOT_TOKEN অ্যাড করুন।")
 
+# Instagram সেটিংস
 INSTAGRAM_LOGIN_URL = "https://www.instagram.com/api/v1/web/accounts/login/ajax/"
 INSTAGRAM_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
